@@ -20,7 +20,8 @@ gofmt -l .               # CI fails if this lists any files
 gh extension install .   # install the local build as `gh maven-central`
 ```
 
-CI (`.github/workflows/ci.yml`) runs gofmt, vet and tests on Linux and Windows.  Pushing a `v*`
+CI (`.github/workflows/ci.yml`) runs gofmt, vet and tests on Linux and Windows, with the latest
+stable Go rather than the version in `go.mod`, so keep the local Go current.  Pushing a `v*`
 tag runs `release.yml`, which builds the binaries `gh extension install` downloads.
 
 ## Layout

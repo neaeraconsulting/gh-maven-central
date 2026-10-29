@@ -16,4 +16,4 @@ jobs:
       - uses: actions/checkout@v7
       - uses: cli/gh-extension-precompile@v2
         with:
-          go_version_file: go.mod
+          go_version: stable
