@@ -34,6 +34,7 @@ Single `package main`, no subpackages.
   helpers (`step`, `info`, `warn`), `write` for dry-run-aware changes, and flag validation.
 - `setup.go`: the `setup` command.
 - `reviewers.go`: the `reviewers` command.
+- `status.go`: the `status` command (read-only).
 - `github.go`: GitHub REST calls through the go-gh client (`requester`), secret sealing with NaCl box.
 - `signing.go`: key generation and revocation certificate (ProtonMail/go-crypto).
 - `keyserver.go`: HKP upload and polling.

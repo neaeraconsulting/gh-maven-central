@@ -169,6 +169,8 @@ func (a *app) setup(args []string) error {
 	s.info("  - Check that the groupId namespace is verified in the Central Portal.")
 	s.info("  - Add required reviewers to the environments that need approval, such as:")
 	s.info("      gh maven-central reviewers -R %s --env %s --set LOGIN", opts.repo, opts.envs[0])
+	s.info("  - Check the result with:")
+	s.info("      gh maven-central status -R %s", opts.repo)
 	return nil
 }
 

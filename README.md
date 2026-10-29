@@ -9,6 +9,7 @@ A [GitHub CLI](https://cli.github.com/) extension that sets up a repository to p
   deployment environments, creating any environments that don't exist.
 - Sets repository variables, such as one that turns publishing on.
 - Shows and changes the environments' required reviewers.
+- Shows how a repository is set up: environments, secret names and variables.
 
 It doesn't write workflows: each repository keeps its own publishing workflows, which read the
 secrets and variables by the names you give the tool. It also doesn't do the steps that only the
@@ -144,6 +145,29 @@ about that.
 Changing reviewers keeps the environment's other settings, such as a wait timer or deployment
 branch policy, and keeps team reviewers added in the GitHub UI unless `--set` or `--clear` replaces
 the list. Required reviewers need a public repository or a paid GitHub plan.
+
+## status
+
+```
+gh maven-central status -R OWNER/REPO [--env NAME]... [options]
+```
+
+| Option                         | Meaning                                                       |
+|--------------------------------|---------------------------------------------------------------|
+| `-R`, `--repo OWNER/REPO`      | Repository (required)                                         |
+| `--env NAME`                   | Environment to show (repeatable; default: all of them)        |
+| `--key-secret NAME`            | Secret names given to `setup`, to mark any that an            |
+| `--passphrase-secret NAME`     | environment is missing                                        |
+| `--token-username-secret NAME` |                                                               |
+| `--token-password-secret NAME` |                                                               |
+
+Shows the repository's variables and secret names, the organization secrets it can use, and each
+environment's reviewers, wait timer, deployment branches, secret names (with the date each was last
+updated) and variables. It never shows secret values, and it changes nothing.
+
+It warns when an environment has a secret with the same name as a repository or organization
+secret. Jobs that use the environment get the environment's value, but jobs that don't get the
+other one, which is easy to miss when it holds an old key or token.
 
 ## Revoking a key
 

@@ -19,6 +19,7 @@ Commands:
   setup       Generate a signing key and store it and a Central Portal token as secrets in
               deployment environments, and set repository variables
   reviewers   Show or change the required reviewers of deployment environments
+  status      Show a repository's environments, secret names and variables
 
 Run 'gh maven-central <command> --help' for the options of each command.
 `
@@ -48,6 +49,8 @@ func run(args []string, a *app) int {
 		err = a.setup(args[1:])
 	case "reviewers":
 		err = a.reviewers(args[1:])
+	case "status":
+		err = a.status(args[1:])
 	case "-h", "--help", "help":
 		fmt.Fprint(a.out, mainUsage)
 		return 0

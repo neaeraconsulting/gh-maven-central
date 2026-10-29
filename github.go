@@ -10,6 +10,9 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
+	"strings"
+	"time"
 
 	"github.com/cli/go-gh/v2/pkg/api"
 	"golang.org/x/crypto/nacl/box"
@@ -56,9 +59,13 @@ func (s *session) envPath(env string) string {
 }
 
 // checkRepo checks that the user can administer the repository, and records whether it's private
+// and whether an organization owns it
 func (s *session) checkRepo() error {
 	var repo struct {
-		Private     bool `json:"private"`
+		Private bool `json:"private"`
+		Owner   struct {
+			Type string `json:"type"`
+		} `json:"owner"`
 		Permissions struct {
 			Admin bool `json:"admin"`
 		} `json:"permissions"`
@@ -73,6 +80,7 @@ func (s *session) checkRepo() error {
 		return fmt.Errorf("you need admin access to %s to manage its environments and secrets", s.repo)
 	}
 	s.private = repo.Private
+	s.orgOwned = repo.Owner.Type == "Organization"
 	return nil
 }
 
@@ -206,22 +214,83 @@ func (s *session) resolveUser(login string) (reviewer, error) {
 
 // secretNames returns the names of the environment's secrets; none if it doesn't exist
 func (s *session) secretNames(env string) (map[string]bool, error) {
-	var resp struct {
-		Secrets []struct {
-			Name string `json:"name"`
-		} `json:"secrets"`
-	}
-	names := map[string]bool{}
-	if err := s.call(http.MethodGet, s.envPath(env)+"/secrets?per_page=100", nil, &resp); err != nil {
-		if isNotFound(err) {
-			return names, nil
-		}
+	secrets, err := s.listSecrets(s.envPath(env) + "/secrets")
+	if err != nil {
 		return nil, fmt.Errorf("can't list the secrets of environment %s: %w", env, err)
 	}
-	for _, secret := range resp.Secrets {
+	names := map[string]bool{}
+	for _, secret := range secrets {
 		names[secret.Name] = true
 	}
 	return names, nil
+}
+
+type secretInfo struct {
+	Name      string    `json:"name"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// listSecrets lists the secrets at path, such as an environment's secrets, sorted by name;
+// none if path doesn't exist
+func (s *session) listSecrets(path string) ([]secretInfo, error) {
+	var resp struct {
+		Secrets []secretInfo `json:"secrets"`
+	}
+	if err := s.call(http.MethodGet, path+"?per_page=100", nil, &resp); err != nil && !isNotFound(err) {
+		return nil, err
+	}
+	slices.SortFunc(resp.Secrets, func(a, b secretInfo) int { return strings.Compare(a.Name, b.Name) })
+	return resp.Secrets, nil
+}
+
+// listVariables lists the variables at path, such as an environment's variables
+func (s *session) listVariables(path string) ([]variable, error) {
+	var resp struct {
+		Variables []struct {
+			Name  string `json:"name"`
+			Value string `json:"value"`
+		} `json:"variables"`
+	}
+	if err := s.call(http.MethodGet, path+"?per_page=100", nil, &resp); err != nil {
+		return nil, err
+	}
+	var list []variable
+	for _, v := range resp.Variables {
+		list = append(list, variable{v.Name, v.Value})
+	}
+	return list, nil
+}
+
+func (s *session) listEnvNames() ([]string, error) {
+	var resp struct {
+		Environments []struct {
+			Name string `json:"name"`
+		} `json:"environments"`
+	}
+	if err := s.call(http.MethodGet, "repos/"+s.repo+"/environments?per_page=100", nil, &resp); err != nil {
+		return nil, fmt.Errorf("can't list the environments of %s: %w", s.repo, err)
+	}
+	var names []string
+	for _, env := range resp.Environments {
+		names = append(names, env.Name)
+	}
+	return names, nil
+}
+
+type branchPolicy struct {
+	Name string `json:"name"`
+	Type string `json:"type"` // branch or tag
+}
+
+// branchPolicies lists the environment's custom deployment branch and tag patterns
+func (s *session) branchPolicies(env string) ([]branchPolicy, error) {
+	var resp struct {
+		BranchPolicies []branchPolicy `json:"branch_policies"`
+	}
+	if err := s.call(http.MethodGet, s.envPath(env)+"/deployment-branch-policies?per_page=100", nil, &resp); err != nil {
+		return nil, fmt.Errorf("can't list the deployment branch policies of environment %s: %w", env, err)
+	}
+	return resp.BranchPolicies, nil
 }
 
 // setSecret encrypts value with the environment's public key and stores it as secret name

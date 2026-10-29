@@ -6,9 +6,11 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -29,9 +31,14 @@ type fakeGitHub struct {
 	envs  map[string]map[string]any
 	users map[string]map[string]any
 	// secrets holds the decrypted secrets of each environment
-	secrets   map[string]map[string]string
-	keys      map[string]*[32]byte
-	variables map[string]string
+	secrets        map[string]map[string]string
+	keys           map[string]*[32]byte
+	variables      map[string]string
+	envVariables   map[string]map[string]string
+	branchPolicies map[string][]branchPolicy
+	repoSecrets    []string
+	// orgSecrets is nil for a repository owned by a user.  GitHub answers 422 when asked for those.
+	orgSecrets []string
 	// writes records each request that changes something, as "METHOD path body"
 	writes []string
 }
@@ -47,9 +54,11 @@ func newFakeGitHub(t *testing.T) *fakeGitHub {
 			"carol":    {"type": "User", "id": 103, "login": "carol"},
 			"some-org": {"type": "Organization", "id": 900, "login": "some-org"},
 		},
-		secrets:   map[string]map[string]string{},
-		keys:      map[string]*[32]byte{},
-		variables: map[string]string{},
+		secrets:        map[string]map[string]string{},
+		keys:           map[string]*[32]byte{},
+		variables:      map[string]string{},
+		envVariables:   map[string]map[string]string{},
+		branchPolicies: map[string][]branchPolicy{},
 	}
 }
 
@@ -67,6 +76,7 @@ func (f *fakeGitHub) addEnv(name string, fields map[string]any) {
 	}
 	f.envs[name] = fields
 	f.secrets[name] = map[string]string{}
+	f.envVariables[name] = map[string]string{}
 }
 
 func (f *fakeGitHub) client() requester {
@@ -122,9 +132,20 @@ func (f *fakeGitHub) serve(w http.ResponseWriter, req *http.Request) {
 			notFound()
 		}
 	case len(parts) == 3 && parts[0] == "repos" && parts[1]+"/"+parts[2] == "o/r":
-		reply(http.StatusOK, map[string]any{"private": f.private, "permissions": map[string]bool{"admin": f.admin}})
+		owner := "User"
+		if f.orgSecrets != nil {
+			owner = "Organization"
+		}
+		reply(http.StatusOK, map[string]any{"private": f.private, "owner": map[string]string{"type": owner},
+			"permissions": map[string]bool{"admin": f.admin}})
 	case len(parts) < 3 || parts[0] != "repos" || parts[1]+"/"+parts[2] != "o/r":
 		notFound()
+	case len(parts) == 4 && parts[3] == "environments":
+		var list []any
+		for _, env := range f.envs {
+			list = append(list, env)
+		}
+		reply(http.StatusOK, map[string]any{"total_count": len(list), "environments": list})
 	case len(parts) == 5 && parts[3] == "environments":
 		name := parts[4]
 		switch req.Method {
@@ -142,8 +163,26 @@ func (f *fakeGitHub) serve(w http.ResponseWriter, req *http.Request) {
 		}
 	case len(parts) >= 6 && parts[3] == "environments" && parts[5] == "secrets":
 		f.serveSecrets(parts[4], parts[6:], req.Method, body, reply, notFound)
+	case len(parts) == 6 && parts[3] == "environments" && parts[5] == "variables":
+		if _, ok := f.envs[parts[4]]; ok {
+			reply(http.StatusOK, map[string]any{"variables": variableList(f.envVariables[parts[4]])})
+		} else {
+			notFound()
+		}
+	case len(parts) == 6 && parts[3] == "environments" && parts[5] == "deployment-branch-policies":
+		reply(http.StatusOK, map[string]any{"branch_policies": f.branchPolicies[parts[4]]})
+	case len(parts) == 5 && parts[3] == "actions" && parts[4] == "secrets":
+		reply(http.StatusOK, map[string]any{"secrets": secretList(f.repoSecrets)})
+	case len(parts) == 5 && parts[3] == "actions" && parts[4] == "organization-secrets":
+		if f.orgSecrets != nil {
+			reply(http.StatusOK, map[string]any{"secrets": secretList(f.orgSecrets)})
+		} else {
+			reply(http.StatusUnprocessableEntity, map[string]string{"message": "Validation Failed"})
+		}
 	case len(parts) >= 5 && parts[3] == "actions" && parts[4] == "variables":
 		switch {
+		case len(parts) == 5 && req.Method == http.MethodGet:
+			reply(http.StatusOK, map[string]any{"variables": variableList(f.variables)})
 		case len(parts) == 6 && req.Method == http.MethodGet:
 			if value, ok := f.variables[parts[5]]; ok {
 				reply(http.StatusOK, map[string]string{"name": parts[5], "value": value})
@@ -175,10 +214,7 @@ func (f *fakeGitHub) serveSecrets(env string, rest []string, method string, body
 	}
 	switch {
 	case len(rest) == 0 && method == http.MethodGet:
-		var list []map[string]string
-		for name := range f.secrets[env] {
-			list = append(list, map[string]string{"name": name})
-		}
+		list := secretList(slices.Collect(maps.Keys(f.secrets[env])))
 		reply(http.StatusOK, map[string]any{"total_count": len(list), "secrets": list})
 	case len(rest) == 1 && rest[0] == "public-key":
 		if f.keys[env] == nil {
@@ -213,6 +249,25 @@ func (f *fakeGitHub) serveSecrets(env string, rest []string, method string, body
 	default:
 		notFound()
 	}
+}
+
+// secretList is a list of secrets as GitHub returns it, all updated at fakeSecretTime
+func secretList(names []string) []map[string]string {
+	var list []map[string]string
+	for _, name := range names {
+		list = append(list, map[string]string{"name": name, "updated_at": fakeSecretTime})
+	}
+	return list
+}
+
+const fakeSecretTime = "2026-10-28T12:00:00Z"
+
+func variableList(variables map[string]string) []map[string]string {
+	var list []map[string]string
+	for name, value := range variables {
+		list = append(list, map[string]string{"name": name, "value": value})
+	}
+	return list
 }
 
 // fakeKeyserver is an HKP keyserver that stores uploaded keys

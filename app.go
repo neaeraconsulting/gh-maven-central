@@ -95,12 +95,13 @@ func (t *stdinTerminal) ReadPassword(prompt string) (string, error) {
 // session is one command run against one repository
 type session struct {
 	*app
-	api     requester
-	repo    string
-	owner   string
-	name    string
-	dryRun  bool
-	private bool
+	api      requester
+	repo     string
+	owner    string
+	name     string
+	dryRun   bool
+	private  bool
+	orgOwned bool
 }
 
 func (a *app) newSession(repo string, dryRun bool) (*session, error) {
