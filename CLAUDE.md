@@ -6,9 +6,6 @@ public key to a keyserver, stores the key and a Central Portal token as environm
 repository variables, and manages environments' required reviewers.  It does not write workflows.
 See `README.md` for user-facing behavior.
 
-The user is experienced with Java but new to Go.  When explaining Go code or idioms, relate them to
-Java equivalents where that helps.
-
 ## Commands
 
 ```shell
