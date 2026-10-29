@@ -1,54 +1,56 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 )
 
-const setupUsage = `Usage: gh maven-central setup -R OWNER/REPO --env NAME [--env NAME]...
-         --key-secret NAME --passphrase-secret NAME
-         --token-username-secret NAME --token-password-secret NAME [options]
+const setupUsage = `Usage: gh maven-central setup -R OWNER/REPO --env NAME [--env NAME]... [--secrets] [options]
 
-Generates a new OpenPGP signing key for the repository and uploads its public key to a keyserver.
-Then creates any of the environments that don't exist, stores the signing key, its passphrase and
-the Central Portal user token as secrets in every environment, and sets the repository variables.
-Existing environments' settings and reviewers are left unchanged; use 'gh maven-central reviewers'
-to set reviewers. Running setup again replaces the key.
+Creates any of the environments that don't exist, and sets or removes the repository variables
+given with the options below. Existing environments' settings and reviewers are left unchanged;
+use 'gh maven-central reviewers' to set reviewers.
+
+With --secrets, it also generates a new OpenPGP signing key for the repository, uploads its public
+key to a keyserver, and stores the signing key, its passphrase and the Central Portal user token in
+every environment as the secrets GPG_SIGNING_KEY, GPG_SIGNING_KEY_PASSWORD, CENTRAL_TOKEN_USERNAME
+and CENTRAL_TOKEN_PASSWORD. Running setup --secrets again replaces the key.
 
 Options:
   -R, --repo OWNER/REPO           Repository to set up (required)
-  --env NAME                      Deployment environment for the secrets (required, repeatable)
-  --key-secret NAME               Secret for the ASCII-armored private key (required)
-  --passphrase-secret NAME        Secret for the private key's passphrase (required)
-  --token-username-secret NAME    Secret for the Central Portal token username (required)
-  --token-password-secret NAME    Secret for the Central Portal token password (required)
-  --variable NAME=VALUE           Repository variable to set (repeatable)
-  --key-name TEXT                 Name in the key's user ID, which is "TEXT (OWNER/REPO)"
-                                  (default: "<repo> release signing")
-  --out-dir DIR                   Where to save the revocation certificate
+  --env NAME                      Deployment environment (required, repeatable)
+  --secrets                       Also generate the signing key and store the secrets
+  --test-secret                   Store the secret TEST_ID, whose value is just "test", in every
+                                  environment, to check that secrets can be stored there
+  --remove-test-secret            Remove TEST_ID from every environment
+` + variableOptionsUsage + `  --key-name TEXT                 With --secrets, the name in the key's user ID, which is
+                                  "TEXT (OWNER/REPO)" (default: "<repo> release signing")
+  --out-dir DIR                   With --secrets, where to save the revocation certificate
                                   (default: ~/.maven-central-keys)
-  --keyserver HOST                Keyserver for the public key (default: keyserver.ubuntu.com)
+  --keyserver HOST                With --secrets, the keyserver for the public key
+                                  (default: keyserver.ubuntu.com)
   --dry-run                       Run the read-only checks and show what would change, without
                                   changing it
   -h, --help                      Show this help
 
-The Central Portal user token is read from the CENTRAL_TOKEN_USERNAME and CENTRAL_TOKEN_PASSWORD
-environment variables if set, or else asked for. At the prompt, a blank username keeps the token
-already stored in the environments.
+With --secrets, the Central Portal user token is read from the CENTRAL_TOKEN_USERNAME and
+CENTRAL_TOKEN_PASSWORD environment variables if set, or else asked for. At the prompt, a blank
+username keeps the token already stored in the environments.
 `
 
 type setupOptions struct {
 	repo                       string
 	envs                       stringList
-	keySecret                  string
-	passphraseSecret           string
-	tokenUsernameSecret        string
-	tokenPasswordSecret        string
-	variables                  stringList
+	secrets                    bool
+	testSecret, removeTest     bool
+	variables                  variableOptions
 	keyName, outDir, keyserver string
 	dryRun                     bool
+	// given holds the names of the flags on the command line
+	given map[string]bool
 }
 
 type variable struct{ name, value string }
@@ -59,11 +61,10 @@ func (a *app) setup(args []string) error {
 	fs.StringVar(&opts.repo, "R", "", "")
 	fs.StringVar(&opts.repo, "repo", "", "")
 	fs.Var(&opts.envs, "env", "")
-	fs.StringVar(&opts.keySecret, "key-secret", "", "")
-	fs.StringVar(&opts.passphraseSecret, "passphrase-secret", "", "")
-	fs.StringVar(&opts.tokenUsernameSecret, "token-username-secret", "", "")
-	fs.StringVar(&opts.tokenPasswordSecret, "token-password-secret", "", "")
-	fs.Var(&opts.variables, "variable", "")
+	fs.BoolVar(&opts.secrets, "secrets", false, "")
+	fs.BoolVar(&opts.testSecret, "test-secret", false, "")
+	fs.BoolVar(&opts.removeTest, "remove-test-secret", false, "")
+	opts.variables.addFlags(fs)
 	fs.StringVar(&opts.keyName, "key-name", "", "")
 	fs.StringVar(&opts.outDir, "out-dir", "", "")
 	fs.StringVar(&opts.keyserver, "keyserver", "keyserver.ubuntu.com", "")
@@ -71,6 +72,8 @@ func (a *app) setup(args []string) error {
 	if err := a.parseFlags(fs, args, setupUsage); err != nil {
 		return err
 	}
+	opts.given = map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { opts.given[f.Name] = true })
 	variables, err := opts.check()
 	if err != nil {
 		return err
@@ -83,7 +86,7 @@ func (a *app) setup(args []string) error {
 	if opts.keyName == "" {
 		opts.keyName = s.name + " release signing"
 	}
-	if opts.outDir == "" {
+	if opts.secrets && opts.outDir == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
 			return fmt.Errorf("can't find the home directory for --out-dir: %w", err)
@@ -104,19 +107,23 @@ func (a *app) setup(args []string) error {
 		exists[name] = env.Exists
 	}
 
-	s.step("Central Portal user token")
-	token, err := s.collectToken(opts)
-	if err != nil {
-		return err
-	}
-
-	s.step("Signing key")
-	key, revocationFile, err := s.makeKey(opts)
-	if err != nil {
-		return err
-	}
-	if err := s.uploadPublicKey(opts.keyserver, key); err != nil {
-		return fmt.Errorf("%w; nothing on GitHub was changed, so run setup again", err)
+	var (
+		token          centralToken
+		key            *signingKey
+		revocationFile string
+	)
+	if opts.secrets {
+		s.step("Central Portal user token")
+		if token, err = s.collectToken(opts); err != nil {
+			return err
+		}
+		s.step("Signing key")
+		if key, revocationFile, err = s.makeKey(opts); err != nil {
+			return err
+		}
+		if err := s.uploadPublicKey(opts.keyserver, key); err != nil {
+			return fmt.Errorf("%w; nothing on GitHub was changed, so run setup again", err)
+		}
 	}
 
 	s.step("Environments")
@@ -128,30 +135,40 @@ func (a *app) setup(args []string) error {
 		}
 	}
 
-	s.step("Secrets")
-	for _, env := range opts.envs {
-		secrets := []variable{
-			{opts.keySecret, key.ArmoredPrivate},
-			{opts.passphraseSecret, key.Passphrase},
-		}
-		if token.username != "" {
-			secrets = append(secrets,
-				variable{opts.tokenUsernameSecret, token.username},
-				variable{opts.tokenPasswordSecret, token.password})
-		}
-		for _, secret := range secrets {
-			if err := s.setSecret(env, secret.name, secret.value); err != nil {
-				return err
+	if opts.secrets || opts.testSecret || opts.removeTest {
+		s.step("Secrets")
+		for _, env := range opts.envs {
+			var secrets []variable
+			if opts.secrets {
+				secrets = append(secrets,
+					variable{keySecret, key.ArmoredPrivate},
+					variable{passphraseSecret, key.Passphrase})
+			}
+			if token.username != "" {
+				secrets = append(secrets,
+					variable{tokenUsernameSecret, token.username},
+					variable{tokenPasswordSecret, token.password})
+			}
+			if opts.testSecret {
+				secrets = append(secrets, variable{testSecret, testSecretValue})
+			}
+			for _, secret := range secrets {
+				if err := s.setSecret(env, secret.name, secret.value); err != nil {
+					return err
+				}
+			}
+			if opts.removeTest {
+				if err := s.removeSecret(env, testSecret); err != nil {
+					return err
+				}
 			}
 		}
 	}
 
 	if len(variables) > 0 {
 		s.step("Repository variables")
-		for _, v := range variables {
-			if err := s.setVariable(v.name, v.value); err != nil {
-				return err
-			}
+		if err := s.changeVariables(variables); err != nil {
+			return err
 		}
 	}
 
@@ -160,12 +177,18 @@ func (a *app) setup(args []string) error {
 		return nil
 	}
 	s.step("Done")
-	s.info("Signing key:  %s", key.Fingerprint)
-	s.info("Public key:   %s", keyLookupURL(opts.keyserver, key.Fingerprint))
-	s.info("Revocation certificate: %s", revocationFile)
-	s.info("  Move it somewhere the repository's maintainers can reach, such as a shared password")
-	s.info("  manager. It is the only way to revoke this key if the private key leaks.")
+	if opts.secrets {
+		s.info("Signing key:  %s", key.Fingerprint)
+		s.info("Public key:   %s", keyLookupURL(opts.keyserver, key.Fingerprint))
+		s.info("Revocation certificate: %s", revocationFile)
+		s.info("  Move it somewhere the repository's maintainers can reach, such as a shared password")
+		s.info("  manager. It is the only way to revoke this key if the private key leaks.")
+	}
 	s.info("Next steps:")
+	if !opts.secrets {
+		s.info("  - Store the signing key and the Central Portal token in the environments with:")
+		s.info("      gh maven-central setup -R %s --env %s --secrets", opts.repo, strings.Join(opts.envs, " --env "))
+	}
 	s.info("  - Check that the groupId namespace is verified in the Central Portal.")
 	s.info("  - Add required reviewers to the environments that need approval, such as:")
 	s.info("      gh maven-central reviewers -R %s --env %s --set LOGIN", opts.repo, opts.envs[0])
@@ -174,45 +197,27 @@ func (a *app) setup(args []string) error {
 	return nil
 }
 
-// check validates the options and parses the variables
-func (o *setupOptions) check() ([]variable, error) {
+// check validates the options and returns the variable changes
+func (o *setupOptions) check() ([]variableChange, error) {
 	if err := checkRepoFlag(o.repo); err != nil {
 		return nil, err
 	}
 	if err := checkEnvFlags(o.envs); err != nil {
 		return nil, err
 	}
-	secretFlags := []struct{ flag, value string }{
-		{"--key-secret", o.keySecret},
-		{"--passphrase-secret", o.passphraseSecret},
-		{"--token-username-secret", o.tokenUsernameSecret},
-		{"--token-password-secret", o.tokenPasswordSecret},
+	variables, err := o.variables.changes()
+	if err != nil {
+		return nil, err
 	}
-	seen := map[string]string{}
-	for _, f := range secretFlags {
-		if err := checkName(f.flag, f.value); err != nil {
-			return nil, err
-		}
-		if other, ok := seen[strings.ToUpper(f.value)]; ok {
-			return nil, usageErrorf("%s and %s name the same secret %s", other, f.flag, f.value)
-		}
-		seen[strings.ToUpper(f.value)] = f.flag
+	if o.testSecret && o.removeTest {
+		return nil, usageErrorf("--test-secret and --remove-test-secret can't be combined")
 	}
-	var variables []variable
-	names := map[string]bool{}
-	for _, v := range o.variables {
-		name, value, ok := strings.Cut(v, "=")
-		if !ok {
-			return nil, usageErrorf("--variable must be NAME=VALUE, not %q", v)
+	if !o.secrets {
+		for _, name := range []string{"key-name", "out-dir", "keyserver"} {
+			if o.given[name] {
+				return nil, usageErrorf("--%s needs --secrets", name)
+			}
 		}
-		if err := checkName("--variable", name); err != nil {
-			return nil, err
-		}
-		if names[strings.ToUpper(name)] {
-			return nil, usageErrorf("--variable %s is given twice", name)
-		}
-		names[strings.ToUpper(name)] = true
-		variables = append(variables, variable{name, value})
 	}
 	if strings.ContainsAny(o.keyName, "()<>") {
 		return nil, usageErrorf("--key-name can't contain ( ) < or >")
@@ -243,7 +248,7 @@ func (s *session) collectToken(opts setupOptions) (centralToken, error) {
 		if err != nil {
 			return centralToken{}, err
 		}
-		if !names[opts.tokenUsernameSecret] || !names[opts.tokenPasswordSecret] {
+		if !names[tokenUsernameSecret] || !names[tokenPasswordSecret] {
 			canKeep = false
 		}
 	}

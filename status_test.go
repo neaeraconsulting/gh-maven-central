@@ -26,8 +26,7 @@ func addStatusRepo(gh *fakeGitHub) {
 func TestStatus(t *testing.T) {
 	ta := newTestApp(t)
 	addStatusRepo(ta.gh)
-	if code := ta.run("status", "-R", "o/r",
-		"--key-secret", "GPG_SIGNING_KEY", "--passphrase-secret", "GPG_SIGNING_KEY_PASSWORD"); code != 0 {
+	if code := ta.run("status", "-R", "o/r"); code != 0 {
 		t.Fatalf("exit %d: %s", code, ta.stderr)
 	}
 	want := `o/r (private)
@@ -47,6 +46,7 @@ maven-central-release
       o/release-team (Team)
     deployment branches: main (branch), v* (tag)
     secrets:
+      CENTRAL_TOKEN_PASSWORD    missing
       CENTRAL_TOKEN_USERNAME    updated 2026-10-28
       GPG_SIGNING_KEY           updated 2026-10-28
       GPG_SIGNING_KEY_PASSWORD  missing
@@ -59,8 +59,7 @@ maven-central-snapshot
       (none; jobs run without approval)
     deployment branches: protected branches
     secrets:
-      GPG_SIGNING_KEY           missing
-      GPG_SIGNING_KEY_PASSWORD  missing
+      (none)
     variables:
       SNAPSHOT=1
 `
@@ -88,7 +87,8 @@ func TestStatusEnvFilter(t *testing.T) {
 	out := ta.stdout.String()
 	for _, want := range []string{
 		"Repository secrets\n    (none)\n\nmaven-central-snapshot\n",
-		"    secrets:\n      (none)\n",
+		// A named environment is checked for the secrets even though it has none of them
+		"    secrets:\n      CENTRAL_TOKEN_PASSWORD    missing\n",
 		"\nmissing\n    doesn't exist\n",
 	} {
 		if !strings.Contains(out, want) {
@@ -125,7 +125,7 @@ func TestStatusErrors(t *testing.T) {
 	}{
 		{"no repo", []string{"status"}, 2, "--repo is required"},
 		{"bad env", []string{"status", "-R", "o/r", "--env", "a b"}, 2, "invalid environment name"},
-		{"bad secret name", []string{"status", "-R", "o/r", "--key-secret", "GITHUB_KEY"}, 2, "--key-secret: invalid name"},
+		{"secret name option", []string{"status", "-R", "o/r", "--key-secret", "KEY"}, 2, "flag provided but not defined"},
 		{"argument", []string{"status", "-R", "o/r", "extra"}, 2, `unexpected argument "extra"`},
 	}
 	for _, tt := range tests {
@@ -138,10 +138,35 @@ func TestStatusErrors(t *testing.T) {
 	}
 }
 
-func TestStatusNeedsAdmin(t *testing.T) {
+func TestStatusWithoutAdmin(t *testing.T) {
 	ta := newTestApp(t)
+	addStatusRepo(ta.gh)
 	ta.gh.admin = false
-	if code := ta.run("status", "-R", "o/r"); code != 1 || !strings.Contains(ta.stderr.String(), "you need admin access") {
-		t.Errorf("exit %d, stderr:\n%s", code, ta.stderr)
+	if code := ta.run("status", "-R", "o/r"); code != 0 {
+		t.Fatalf("exit %d: %s", code, ta.stderr)
+	}
+	out := ta.stdout.String()
+	cantRead := "can't read: HTTP 403: Must have admin rights to Repository.\n"
+	for _, want := range []string{
+		"Repository variables\n    MAVEN_CENTRAL_PUBLISH=true\n",
+		"Repository secrets\n    " + cantRead,
+		"Organization secrets\n    " + cantRead,
+		"      alice (User)\n",
+		"    deployment branches: main (branch), v* (tag)\n    secrets:\n      " + cantRead,
+		"    variables:\n      SNAPSHOT=1\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output doesn't contain %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "missing") {
+		t.Errorf("output marks secrets missing that it couldn't read:\n%s", out)
+	}
+	wantWarning := "warning: some settings can't be read; you don't have admin access to o/r, which some of them need\n"
+	if got := ta.stderr.String(); got != wantWarning {
+		t.Errorf("stderr:\n%s\nwant:\n%s", got, wantWarning)
+	}
+	if len(ta.gh.writes) != 0 {
+		t.Errorf("status changed something: %v", ta.gh.writes)
 	}
 }

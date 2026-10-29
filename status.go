@@ -9,38 +9,34 @@ import (
 	"time"
 )
 
-const statusUsage = `Usage: gh maven-central status -R OWNER/REPO [--env NAME]... [options]
+const statusUsage = `Usage: gh maven-central status -R OWNER/REPO [--env NAME]...
 
 Shows how a repository is set up for publishing: its variables and secret names, the organization
 secrets it can use, and each environment's reviewers, wait timer, deployment branches, secret names
-and variables. Secret values are never shown. Warns about secrets that are set both in an
-environment and in the repository or organization, because jobs that don't use the environment get
-the repository's or organization's value.
+and variables. Secret values are never shown. Anything your gh login can't read, such as secrets
+without admin access, is marked as such.
+
+Marks the secrets that setup --secrets stores as missing in the environments that have any of
+them or the TEST_ID secret from setup --test-secret, and in the environments given with --env.
+Warns about secrets that are set both in an environment
+and in the repository or organization, because jobs that don't use the environment get the
+repository's or organization's value.
 
 Options:
-  -R, --repo OWNER/REPO           Repository (required)
-  --env NAME                      Environment to show (repeatable; default: all of them)
-  --key-secret NAME               The secret names given to setup. Any that an environment is
-  --passphrase-secret NAME        missing are marked as missing.
-  --token-username-secret NAME
-  --token-password-secret NAME
-  -h, --help                      Show this help
+  -R, --repo OWNER/REPO    Repository (required)
+  --env NAME               Environment to show (repeatable; default: all of them)
+  -h, --help               Show this help
 `
 
 func (a *app) status(args []string) error {
 	var (
-		repo, keySecret, passphraseSecret        string
-		tokenUsernameSecret, tokenPasswordSecret string
-		envs                                     stringList
+		repo string
+		envs stringList
 	)
 	fs := newFlagSet("status")
 	fs.StringVar(&repo, "R", "", "")
 	fs.StringVar(&repo, "repo", "", "")
 	fs.Var(&envs, "env", "")
-	fs.StringVar(&keySecret, "key-secret", "", "")
-	fs.StringVar(&passphraseSecret, "passphrase-secret", "", "")
-	fs.StringVar(&tokenUsernameSecret, "token-username-secret", "", "")
-	fs.StringVar(&tokenPasswordSecret, "token-password-secret", "", "")
 	if err := a.parseFlags(fs, args, statusUsage); err != nil {
 		return err
 	}
@@ -52,27 +48,13 @@ func (a *app) status(args []string) error {
 			return err
 		}
 	}
-	var expected []string
-	for _, f := range []struct{ flag, value string }{
-		{"--key-secret", keySecret},
-		{"--passphrase-secret", passphraseSecret},
-		{"--token-username-secret", tokenUsernameSecret},
-		{"--token-password-secret", tokenPasswordSecret},
-	} {
-		if f.value == "" {
-			continue
-		}
-		if err := checkName(f.flag, f.value); err != nil {
-			return err
-		}
-		expected = append(expected, f.value)
-	}
-
 	s, err := a.newSession(repo, false)
 	if err != nil {
 		return err
 	}
-	if err := s.checkRepo(); err != nil {
+	// Unlike setup and reviewers, status shows whatever the user can read without admin access
+	admin, err := s.readRepo()
+	if err != nil {
 		return err
 	}
 	visibility := "public"
@@ -80,34 +62,43 @@ func (a *app) status(args []string) error {
 		visibility = "private"
 	}
 	fmt.Fprintf(s.out, "%s (%s)\n\n", repo, visibility)
-
-	variables, err := s.listVariables("repos/" + repo + "/actions/variables")
-	if err != nil {
-		return fmt.Errorf("can't list the repository variables: %w", err)
+	unreadable := false
+	cantRead := func(prefix string, err error) {
+		unreadable = true
+		s.info("%scan't read: %s", prefix, readError(err))
 	}
+
 	fmt.Fprintln(s.out, "Repository variables")
-	s.printVariables("", variables)
-	repoSecrets, err := s.listSecrets("repos/" + repo + "/actions/secrets")
-	if err != nil {
-		return fmt.Errorf("can't list the repository secrets: %w", err)
+	if variables, err := s.listVariables("repos/" + repo + "/actions/variables"); err != nil {
+		cantRead("", err)
+	} else {
+		s.printVariables("", variables)
 	}
 	fmt.Fprintln(s.out, "Repository secrets")
-	s.printSecrets("", repoSecrets, nil)
+	repoSecrets, err := s.listSecrets("repos/" + repo + "/actions/secrets")
+	if err != nil {
+		cantRead("", err)
+	} else {
+		s.printSecrets("", repoSecrets, nil)
+	}
 	var orgSecrets []secretInfo
 	if s.orgOwned {
-		if orgSecrets, err = s.listSecrets("repos/" + repo + "/actions/organization-secrets"); err != nil {
-			return fmt.Errorf("can't list the organization secrets: %w", err)
-		}
 		fmt.Fprintln(s.out, "Organization secrets")
-		s.printSecrets("", orgSecrets, nil)
+		if orgSecrets, err = s.listSecrets("repos/" + repo + "/actions/organization-secrets"); err != nil {
+			cantRead("", err)
+		} else {
+			s.printSecrets("", orgSecrets, nil)
+		}
 	}
 
-	if len(envs) == 0 {
+	named := len(envs) > 0
+	if !named {
 		names, err := s.listEnvNames()
-		if err != nil {
-			return err
-		}
-		if len(names) == 0 {
+		switch {
+		case err != nil:
+			fmt.Fprintln(s.out, "\nEnvironments")
+			cantRead("", err)
+		case len(names) == 0:
 			fmt.Fprintln(s.out, "\nNo environments")
 		}
 		slices.Sort(names)
@@ -115,11 +106,13 @@ func (a *app) status(args []string) error {
 	}
 	var warnings []string
 	for _, name := range envs {
+		fmt.Fprintln(s.out)
 		env, err := s.readEnv(name)
 		if err != nil {
-			return err
+			fmt.Fprintln(s.out, name)
+			cantRead("", err)
+			continue
 		}
-		fmt.Fprintln(s.out)
 		if !env.Exists {
 			fmt.Fprintln(s.out, name)
 			s.info("doesn't exist")
@@ -127,25 +120,37 @@ func (a *app) status(args []string) error {
 		}
 		s.printEnv(name, env, env.Reviewers, env.PreventSelfReview)
 		if err := s.printBranches(env); err != nil {
-			return err
-		}
-		secrets, err := s.listSecrets(s.envPath(name) + "/secrets")
-		if err != nil {
-			return fmt.Errorf("can't list the secrets of environment %s: %w", name, err)
+			cantRead("deployment branches: ", err)
 		}
 		s.info("secrets:")
-		s.printSecrets("  ", secrets, expected)
-		variables, err := s.listVariables(s.envPath(name) + "/variables")
-		if err != nil {
-			return fmt.Errorf("can't list the variables of environment %s: %w", name, err)
+		if secrets, err := s.listSecrets(s.envPath(name) + "/secrets"); err != nil {
+			cantRead("  ", err)
+		} else {
+			var expected []string
+			if named || slices.ContainsFunc(secrets, func(secret secretInfo) bool {
+				return secret.Name == testSecret || slices.Contains(publishingSecrets, secret.Name)
+			}) {
+				expected = publishingSecrets
+			}
+			s.printSecrets("  ", secrets, expected)
+			warnings = append(warnings, overlaps(name, secrets, repoSecrets, "repository")...)
+			warnings = append(warnings, overlaps(name, secrets, orgSecrets, "organization")...)
 		}
 		s.info("variables:")
-		s.printVariables("  ", variables)
-		warnings = append(warnings, overlaps(name, secrets, repoSecrets, "repository")...)
-		warnings = append(warnings, overlaps(name, secrets, orgSecrets, "organization")...)
+		if variables, err := s.listVariables(s.envPath(name) + "/variables"); err != nil {
+			cantRead("  ", err)
+		} else {
+			s.printVariables("  ", variables)
+		}
 	}
 	for _, w := range warnings {
 		s.warn("%s", w)
+	}
+	switch {
+	case unreadable && !admin:
+		s.warn("some settings can't be read; you don't have admin access to %s, which some of them need", repo)
+	case unreadable:
+		s.warn("some settings can't be read")
 	}
 	return nil
 }
@@ -185,6 +190,9 @@ func (s *session) printSecrets(indent string, secrets []secretInfo, expected []s
 	notes := map[string]string{}
 	for _, secret := range secrets {
 		notes[secret.Name] = "updated " + secret.UpdatedAt.UTC().Format(time.DateOnly)
+		if secret.Name == testSecret {
+			notes[secret.Name] += " (test secret from setup --test-secret)"
+		}
 	}
 	for _, name := range expected {
 		if _, ok := notes[name]; !ok {

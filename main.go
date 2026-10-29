@@ -20,6 +20,7 @@ Commands:
               deployment environments, and set repository variables
   reviewers   Show or change the required reviewers of deployment environments
   status      Show a repository's environments, secret names and variables
+  variables   Show or change the MAVEN_CENTRAL_PUBLISH and MAVEN_GROUP_ID repository variables
 
 Run 'gh maven-central <command> --help' for the options of each command.
 `
@@ -51,6 +52,8 @@ func run(args []string, a *app) int {
 		err = a.reviewers(args[1:])
 	case "status":
 		err = a.status(args[1:])
+	case "variables":
+		err = a.variables(args[1:])
 	case "-h", "--help", "help":
 		fmt.Fprint(a.out, mainUsage)
 		return 0

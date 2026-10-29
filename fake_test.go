@@ -140,6 +140,8 @@ func (f *fakeGitHub) serve(w http.ResponseWriter, req *http.Request) {
 			"permissions": map[string]bool{"admin": f.admin}})
 	case len(parts) < 3 || parts[0] != "repos" || parts[1]+"/"+parts[2] != "o/r":
 		notFound()
+	case !f.admin && slices.ContainsFunc(parts[3:], func(p string) bool { return strings.HasSuffix(p, "secrets") }):
+		reply(http.StatusForbidden, map[string]string{"message": "Must have admin rights to Repository."})
 	case len(parts) == 4 && parts[3] == "environments":
 		var list []any
 		for _, env := range f.envs {
@@ -189,6 +191,13 @@ func (f *fakeGitHub) serve(w http.ResponseWriter, req *http.Request) {
 			} else {
 				notFound()
 			}
+		case len(parts) == 6 && req.Method == http.MethodDelete:
+			if _, ok := f.variables[parts[5]]; ok {
+				delete(f.variables, parts[5])
+				reply(http.StatusNoContent, nil)
+			} else {
+				notFound()
+			}
 		case len(parts) == 6 && req.Method == http.MethodPatch, len(parts) == 5 && req.Method == http.MethodPost:
 			var v struct{ Name, Value string }
 			_ = json.Unmarshal(body, &v)
@@ -227,6 +236,13 @@ func (f *fakeGitHub) serveSecrets(env string, rest []string, method string, body
 		}
 		reply(http.StatusOK, map[string]string{
 			"key_id": "key-" + env, "key": base64.StdEncoding.EncodeToString(f.keys[env+"/public"][:])})
+	case len(rest) == 1 && method == http.MethodDelete:
+		if _, ok := f.secrets[env][rest[0]]; ok {
+			delete(f.secrets[env], rest[0])
+			reply(http.StatusNoContent, nil)
+		} else {
+			notFound()
+		}
 	case len(rest) == 1 && method == http.MethodPut:
 		var v struct {
 			EncryptedValue string `json:"encrypted_value"`

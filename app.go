@@ -17,13 +17,27 @@ import (
 )
 
 var (
-	repoPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`)
-	// Secret and variable names
-	namePattern  = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+	repoPattern  = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`)
 	envPattern   = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
 	loginPattern = regexp.MustCompile(`^[A-Za-z0-9-]+$`)
 	hostPattern  = regexp.MustCompile(`^[A-Za-z0-9.-]+(:[0-9]+)?$`)
+	groupPattern = regexp.MustCompile(`^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$`)
 )
+
+// The names that the publishing workflows read
+const (
+	keySecret           = "GPG_SIGNING_KEY"
+	passphraseSecret    = "GPG_SIGNING_KEY_PASSWORD"
+	tokenUsernameSecret = "CENTRAL_TOKEN_USERNAME"
+	tokenPasswordSecret = "CENTRAL_TOKEN_PASSWORD"
+	// testSecret holds testSecretValue, not a real secret, to check that setup can store secrets
+	testSecret      = "TEST_ID"
+	testSecretValue = "test"
+	publishVariable = "MAVEN_CENTRAL_PUBLISH"
+	groupIDVariable = "MAVEN_GROUP_ID"
+)
+
+var publishingSecrets = []string{keySecret, passphraseSecret, tokenUsernameSecret, tokenPasswordSecret}
 
 // app holds the dependencies of the commands, so tests can replace them
 type app struct {
@@ -192,16 +206,6 @@ func checkEnvFlags(envs []string) error {
 			return usageErrorf("--env %s is given twice", env)
 		}
 		seen[strings.ToLower(env)] = true
-	}
-	return nil
-}
-
-func checkName(flagName, value string) error {
-	if value == "" {
-		return usageErrorf("%s is required", flagName)
-	}
-	if !namePattern.MatchString(value) || strings.HasPrefix(strings.ToUpper(value), "GITHUB_") {
-		return usageErrorf("%s: invalid name %q (letters, digits and _, not starting with a digit or GITHUB_)", flagName, value)
 	}
 	return nil
 }

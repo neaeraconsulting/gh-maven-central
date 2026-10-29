@@ -61,6 +61,19 @@ func (s *session) envPath(env string) string {
 // checkRepo checks that the user can administer the repository, and records whether it's private
 // and whether an organization owns it
 func (s *session) checkRepo() error {
+	admin, err := s.readRepo()
+	if err != nil {
+		return err
+	}
+	if !admin {
+		return fmt.Errorf("you need admin access to %s to manage its environments and secrets", s.repo)
+	}
+	return nil
+}
+
+// readRepo records whether the repository is private and whether an organization owns it, and
+// returns whether the user can administer it
+func (s *session) readRepo() (bool, error) {
 	var repo struct {
 		Private bool `json:"private"`
 		Owner   struct {
@@ -72,16 +85,26 @@ func (s *session) checkRepo() error {
 	}
 	if err := s.call(http.MethodGet, "repos/"+s.repo, nil, &repo); err != nil {
 		if isNotFound(err) {
-			return fmt.Errorf("repository %s not found, or not visible to your gh login", s.repo)
+			return false, fmt.Errorf("repository %s not found, or not visible to your gh login", s.repo)
 		}
-		return fmt.Errorf("can't read repository %s: %w", s.repo, err)
-	}
-	if !repo.Permissions.Admin {
-		return fmt.Errorf("you need admin access to %s to manage its environments and secrets", s.repo)
+		return false, fmt.Errorf("can't read repository %s: %w", s.repo, err)
 	}
 	s.private = repo.Private
 	s.orgOwned = repo.Owner.Type == "Organization"
-	return nil
+	return repo.Permissions.Admin, nil
+}
+
+// readError describes why a read failed, without the request URL that go-gh adds
+func readError(err error) string {
+	httpErr, ok := errors.AsType[*api.HTTPError](err)
+	switch {
+	case !ok:
+		return err.Error()
+	case httpErr.Message == "":
+		return fmt.Sprintf("HTTP %d", httpErr.StatusCode)
+	default:
+		return fmt.Sprintf("HTTP %d: %s", httpErr.StatusCode, httpErr.Message)
+	}
 }
 
 // environment is the state of a deployment environment that this tool reads or preserves
@@ -214,11 +237,14 @@ func (s *session) resolveUser(login string) (reviewer, error) {
 
 // secretNames returns the names of the environment's secrets; none if it doesn't exist
 func (s *session) secretNames(env string) (map[string]bool, error) {
+	names := map[string]bool{}
 	secrets, err := s.listSecrets(s.envPath(env) + "/secrets")
+	if isNotFound(err) {
+		return names, nil
+	}
 	if err != nil {
 		return nil, fmt.Errorf("can't list the secrets of environment %s: %w", env, err)
 	}
-	names := map[string]bool{}
 	for _, secret := range secrets {
 		names[secret.Name] = true
 	}
@@ -230,13 +256,12 @@ type secretInfo struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
-// listSecrets lists the secrets at path, such as an environment's secrets, sorted by name;
-// none if path doesn't exist
+// listSecrets lists the secrets at path, such as an environment's secrets, sorted by name
 func (s *session) listSecrets(path string) ([]secretInfo, error) {
 	var resp struct {
 		Secrets []secretInfo `json:"secrets"`
 	}
-	if err := s.call(http.MethodGet, path+"?per_page=100", nil, &resp); err != nil && !isNotFound(err) {
+	if err := s.call(http.MethodGet, path+"?per_page=100", nil, &resp); err != nil {
 		return nil, err
 	}
 	slices.SortFunc(resp.Secrets, func(a, b secretInfo) int { return strings.Compare(a.Name, b.Name) })
@@ -315,6 +340,23 @@ func (s *session) setSecret(env, name, value string) error {
 	})
 }
 
+func (s *session) removeSecret(env, name string) error {
+	names, err := s.secretNames(env)
+	if err != nil {
+		return err
+	}
+	if !names[name] {
+		s.info("%s: %s is not set", env, name)
+		return nil
+	}
+	return s.write(env+": remove "+name, func() error {
+		if err := s.call(http.MethodDelete, s.envPath(env)+"/secrets/"+name, nil, nil); err != nil {
+			return fmt.Errorf("can't remove secret %s from environment %s: %w", name, env, err)
+		}
+		return nil
+	})
+}
+
 // sealSecret encrypts value for GitHub with a libsodium sealed box, given the base64 public key
 func sealSecret(publicKey, value string) (string, error) {
 	raw, err := base64.StdEncoding.DecodeString(publicKey)
@@ -347,6 +389,38 @@ func (s *session) setVariable(name, value string) error {
 		}
 		if err != nil {
 			return fmt.Errorf("can't set variable %s: %w", name, err)
+		}
+		return nil
+	})
+}
+
+// readVariable returns a repository variable's value and whether it's set
+func (s *session) readVariable(name string) (string, bool, error) {
+	var v struct {
+		Value string `json:"value"`
+	}
+	err := s.call(http.MethodGet, "repos/"+s.repo+"/actions/variables/"+name, nil, &v)
+	switch {
+	case isNotFound(err):
+		return "", false, nil
+	case err != nil:
+		return "", false, fmt.Errorf("can't read variable %s: %w", name, err)
+	}
+	return v.Value, true, nil
+}
+
+func (s *session) removeVariable(name string) error {
+	_, ok, err := s.readVariable(name)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		s.info("%s is not set", name)
+		return nil
+	}
+	return s.write("Remove "+name, func() error {
+		if err := s.call(http.MethodDelete, "repos/"+s.repo+"/actions/variables/"+name, nil, nil); err != nil {
+			return fmt.Errorf("can't remove variable %s: %w", name, err)
 		}
 		return nil
 	})

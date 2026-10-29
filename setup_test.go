@@ -16,12 +16,65 @@ const snapshot = "maven-central-snapshot"
 
 func setupArgs(outDir string, extra ...string) []string {
 	return append([]string{"setup", "-R", "o/r",
-		"--env", release, "--env", snapshot,
-		"--key-secret", "GPG_SIGNING_KEY",
-		"--passphrase-secret", "GPG_SIGNING_KEY_PASSWORD",
-		"--token-username-secret", "CENTRAL_TOKEN_USERNAME",
-		"--token-password-secret", "CENTRAL_TOKEN_PASSWORD",
+		"--env", release, "--env", snapshot, "--secrets",
 		"--out-dir", outDir}, extra...)
+}
+
+func TestSetupWithoutSecrets(t *testing.T) {
+	ta := newTestApp(t)
+	addReleaseEnv(ta.gh)
+	if code := ta.run("setup", "-R", "o/r", "--env", release, "--env", snapshot, "--publish", "true"); code != 0 {
+		t.Fatalf("exit %d:\n%s\n%s", code, ta.stdout, ta.stderr)
+	}
+	want := []string{
+		"PUT /repos/o/r/environments/" + snapshot,
+		`POST /repos/o/r/actions/variables {"name":"MAVEN_CENTRAL_PUBLISH","value":"true"}`,
+	}
+	if !slices.Equal(ta.gh.writes, want) {
+		t.Errorf("writes: %v\nwant: %v", ta.gh.writes, want)
+	}
+	if len(ta.ks.uploaded) != 0 || len(ta.term.asked) != 0 {
+		t.Errorf("%d keys uploaded, prompts %q", len(ta.ks.uploaded), ta.term.asked)
+	}
+	if !strings.Contains(ta.stdout.String(), "--env "+release+" --env "+snapshot+" --secrets") {
+		t.Errorf("the summary doesn't show how to add the secrets:\n%s", ta.stdout)
+	}
+}
+
+func TestSetupTestSecret(t *testing.T) {
+	ta := newTestApp(t)
+	addReleaseEnv(ta.gh)
+	if code := ta.run("setup", "-R", "o/r", "--env", release, "--env", snapshot, "--test-secret"); code != 0 {
+		t.Fatalf("exit %d:\n%s\n%s", code, ta.stdout, ta.stderr)
+	}
+	for _, env := range []string{release, snapshot} {
+		if got := ta.gh.secrets[env]; len(got) != 1 || got[testSecret] != "test" {
+			t.Errorf("%s secrets: %v", env, got)
+		}
+	}
+	if len(ta.ks.uploaded) != 0 || len(ta.term.asked) != 0 {
+		t.Errorf("%d keys uploaded, prompts %q", len(ta.ks.uploaded), ta.term.asked)
+	}
+
+	if code := ta.run("status", "-R", "o/r", "--env", snapshot); code != 0 {
+		t.Fatalf("exit %d: %s", code, ta.stderr)
+	}
+	if want := "TEST_ID                   updated 2026-10-28 (test secret from setup --test-secret)"; !strings.Contains(ta.stdout.String(), want) {
+		t.Errorf("status doesn't show %q:\n%s", want, ta.stdout)
+	}
+
+	ta.gh.secrets[release]["OTHER"] = "kept"
+	if code := ta.run("setup", "-R", "o/r", "--env", release, "--env", snapshot, "--remove-test-secret"); code != 0 {
+		t.Fatalf("exit %d:\n%s\n%s", code, ta.stdout, ta.stderr)
+	}
+	if len(ta.gh.secrets[snapshot]) != 0 || len(ta.gh.secrets[release]) != 1 {
+		t.Errorf("secrets after removing: %v, %v", ta.gh.secrets[release], ta.gh.secrets[snapshot])
+	}
+	// Removing it again is a no-op
+	ta.gh.writes = nil
+	if code := ta.run("setup", "-R", "o/r", "--env", release, "--remove-test-secret"); code != 0 || len(ta.gh.writes) != 0 {
+		t.Errorf("exit %d, writes %v", code, ta.gh.writes)
+	}
 }
 
 func TestSetup(t *testing.T) {
@@ -33,7 +86,7 @@ func TestSetup(t *testing.T) {
 	outDir := t.TempDir()
 
 	code := ta.run(setupArgs(outDir,
-		"--variable", "MAVEN_CENTRAL_PUBLISH=true", "--variable", "MAVEN_GROUP_ID=io.github.o")...)
+		"--publish", "true", "--group-id", "io.github.o")...)
 	if code != 0 {
 		t.Fatalf("exit %d:\n%s\n%s", code, ta.stdout, ta.stderr)
 	}
@@ -157,7 +210,7 @@ func TestSetupNotInteractive(t *testing.T) {
 func TestSetupDryRun(t *testing.T) {
 	ta := newTestApp(t)
 	outDir := filepath.Join(t.TempDir(), "keys")
-	if code := ta.run(setupArgs(outDir, "--variable", "A=1", "--dry-run")...); code != 0 {
+	if code := ta.run(setupArgs(outDir, "--remove-group-id", "--publish", "false", "--dry-run")...); code != 0 {
 		t.Fatalf("exit %d:\n%s", code, ta.stderr)
 	}
 	if len(ta.gh.writes) != 0 || len(ta.ks.uploaded) != 0 {
@@ -172,7 +225,8 @@ func TestSetupDryRun(t *testing.T) {
 		"[dry-run] Upload the public key",
 		"[dry-run] Creating environment " + snapshot,
 		"[dry-run] " + snapshot + ": CENTRAL_TOKEN_PASSWORD",
-		"[dry-run] A=1",
+		"[dry-run] MAVEN_CENTRAL_PUBLISH=false",
+		"MAVEN_GROUP_ID is not set",
 		"Dry run finished",
 	} {
 		if !strings.Contains(ta.stdout.String(), want) {
@@ -228,16 +282,13 @@ func TestSetupUsageErrors(t *testing.T) {
 		args []string
 		want string
 	}{
-		{"no key secret", without("--key-secret"), "--key-secret is required"},
-		{"no token password secret", without("--token-password-secret"), "--token-password-secret is required"},
 		{"no env", without("--env"), "at least one --env is required"},
 		{"duplicate env", append(full, "--env", release), "is given twice"},
-		{"bad secret name", append(full, "--key-secret", "1BAD"), "invalid name"},
-		{"GITHUB_ secret", append(full, "--key-secret", "GITHUB_KEY"), "invalid name"},
-		{"same secret twice", append(full, "--passphrase-secret", "GPG_SIGNING_KEY"), "name the same secret"},
-		{"variable without value", append(full, "--variable", "A"), "must be NAME=VALUE"},
-		{"bad variable name", append(full, "--variable", "A-B=1"), "invalid name"},
-		{"duplicate variable", append(full, "--variable", "A=1", "--variable", "a=2"), "given twice"},
+		{"secret name option", append(full, "--key-secret", "KEY"), "flag provided but not defined"},
+		{"test secret and remove", append(full, "--test-secret", "--remove-test-secret"), "can't be combined"},
+		{"key option without secrets", []string{"-R", "o/r", "--env", release, "--keyserver", "k"}, "--keyserver needs --secrets"},
+		{"bad publish", append(full, "--publish", "yes"), "--publish must be true or false"},
+		{"bad group id", append(full, "--group-id", "io..github"), "--group-id must be a groupId"},
 		{"key name with parenthesis", append(full, "--key-name", "a (b)"), "--key-name can't contain"},
 		{"keyserver URL", append(full, "--keyserver", "https://x"), "--keyserver must be a host name"},
 		{"extra argument", append(full, "extra"), "unexpected argument"},

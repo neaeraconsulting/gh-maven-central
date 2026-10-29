@@ -32,6 +32,8 @@ Single `package main`, no subpackages.
 - `setup.go`: the `setup` command.
 - `reviewers.go`: the `reviewers` command.
 - `status.go`: the `status` command (read-only).
+- `variables.go`: the `variables` command, and the variable options it shares with `setup`.  The
+  fixed secret and variable names are constants in `app.go`.
 - `github.go`: GitHub REST calls through the go-gh client (`requester`), secret sealing with NaCl box.
 - `signing.go`: key generation and revocation certificate (ProtonMail/go-crypto).
 - `keyserver.go`: HKP upload and polling.
@@ -45,10 +47,19 @@ Single `package main`, no subpackages.
   `--dry-run` never changes anything.
 - Flags use the standard `flag` package via `newFlagSet` and `parseFlags`.  Usage text is a const
   per command and is kept in sync with `README.md`.
+- A new command needs a case in `run` and a line in `mainUsage` (`main.go`), its own usage const,
+  a `README.md` section, and an entry under Layout above.
+- Call GitHub through `session.call`, which uses `requester.Request`.  go-gh's `Do` fails on the
+  empty bodies of some successful responses.
 - Error messages are lowercase, user-facing, and wrap causes with `%w`.
 - Tests use the fakes, not the network.  Use a real go-gh client against the fake server, and
-  assert on `gh.writes`, captured stdout/stderr and exit codes.
+  assert on `gh.writes`, captured stdout/stderr and exit codes.  The fake only knows repository
+  `o/r` and answers 404 for any route it lacks, so a new GitHub endpoint needs a route in
+  `fakeGitHub.serve`.  It records every non-GET request in `writes`, so read-only and dry-run
+  tests check that `writes` is empty.
 - Keep the key's private material off disk; only the revocation certificate is written.
+- The code uses recent standard library additions (such as `errors.AsType`).  If a change needs a
+  newer one, raise the `go` line in `go.mod` too.
 
 ## Style
 
