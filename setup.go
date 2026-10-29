@@ -12,7 +12,8 @@ const setupUsage = `Usage: gh maven-central setup -R OWNER/REPO --env NAME [--en
 
 Creates any of the environments that don't exist, with a wait timer, and sets or removes the
 repository variables given with the options below. Existing environments' settings and reviewers
-are left unchanged; use 'gh maven-central reviewers' to change them.
+are left unchanged, except for the wait timer if --wait-timer is given; use
+'gh maven-central reviewers' to change reviewers.
 
 With --secrets, it also generates a new OpenPGP signing key for the repository, uploads its public
 key to a keyserver, and stores the signing key, its passphrase and the Central Portal user token in
@@ -26,8 +27,9 @@ Options:
   --test-secret                   Store the secret TEST_ID, whose value is just "test", in every
                                   environment, to check that secrets can be stored there
   --remove-test-secret            Remove TEST_ID from every environment
-  --wait-timer MINUTES            The wait timer of the environments it creates, which delays
-                                  each job that uses them; 0 for none (default: 5)
+  --wait-timer MINUTES            Set the wait timer, which delays each job that uses the
+                                  environments, in every environment; 0 for none. Without it,
+                                  the environments it creates get 5 minutes.
 ` + variableOptionsUsage + `  --key-name TEXT                 With --secrets, the name in the key's user ID, which is
                                   "TEXT (OWNER/REPO)" (default: "<repo> release signing")
   --out-dir DIR                   With --secrets, where to save the revocation certificate
@@ -102,13 +104,11 @@ func (a *app) setup(args []string) error {
 	if err := s.checkRepo(); err != nil {
 		return err
 	}
-	exists := map[string]bool{}
+	envs := map[string]*environment{}
 	for _, name := range opts.envs {
-		env, err := s.readEnv(name)
-		if err != nil {
+		if envs[name], err = s.readEnv(name); err != nil {
 			return err
 		}
-		exists[name] = env.Exists
 	}
 
 	var (
@@ -132,10 +132,21 @@ func (a *app) setup(args []string) error {
 
 	s.step("Environments")
 	for _, name := range opts.envs {
-		if exists[name] {
+		env := envs[name]
+		switch {
+		case !env.Exists:
+			if err := s.createEnv(name, opts.waitTimer); err != nil {
+				return err
+			}
+		case !opts.given["wait-timer"]:
 			s.info("%s already exists; its settings are unchanged", name)
-		} else if err := s.createEnv(name, opts.waitTimer); err != nil {
-			return err
+		case env.WaitTimer == opts.waitTimer:
+			s.info("%s already exists with a wait timer of %d minutes", name, env.WaitTimer)
+		default:
+			update := updateBody(env, env.Reviewers, env.PreventSelfReview, &opts.waitTimer)
+			if err := s.putEnv(name, update); err != nil {
+				return err
+			}
 		}
 	}
 

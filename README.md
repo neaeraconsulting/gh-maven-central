@@ -152,7 +152,7 @@ gh maven-central setup -R OWNER/REPO --env NAME [--env NAME]... [--secrets] [opt
 | `--secrets`                    | Also generate the signing key and store the [secrets](#names)                   |
 | `--test-secret`                | Store the secret `TEST_ID`, whose value is just `test`, in every environment, to check that secrets can be stored there |
 | `--remove-test-secret`         | Remove `TEST_ID` from every environment                                         |
-| `--wait-timer MINUTES`         | The wait timer of the environments it creates, which delays each job that uses them; `0` for none (default: `5`) |
+| `--wait-timer MINUTES`         | Set the wait timer, which delays each job that uses the environments, in every environment; `0` for none. Without it, the environments it creates get 5 minutes |
 | `--publish true\|false`        | Set `MAVEN_CENTRAL_PUBLISH`                                                     |
 | `--remove-publish`             | Remove `MAVEN_CENTRAL_PUBLISH`, which turns publishing off                      |
 | `--group-id GROUP`             | Set `MAVEN_GROUP_ID`                                                            |
@@ -172,9 +172,9 @@ gh maven-central setup -R OWNER/REPO --env NAME [--env NAME]... [--secrets] [opt
 3. With `--secrets`, saves the key's [revocation certificate](#revoking-a-key) to `--out-dir`.
 4. With `--secrets`, uploads the public key to the keyserver and waits until the keyserver returns
    it. If that fails, nothing on GitHub has been changed yet.
-5. Creates the environments that don't exist, with a wait timer of `--wait-timer` minutes, which
-   leaves time to cancel a job before it publishes. Existing environments' settings and reviewers
-   are left as they are. Wait timers on private repositories need a paid GitHub plan; without one,
+5. Creates the environments that don't exist, with a wait timer of `--wait-timer` minutes, or 5,
+   which leaves time to cancel a job before it publishes. Existing environments' settings and
+   reviewers are left as they are, except that `--wait-timer` sets their wait timer too. Wait timers on private repositories need a paid GitHub plan; without one,
    `setup` warns and creates the environments without a wait timer.
 6. With `--secrets`, stores the key, passphrase and token in every environment, encrypted for
    GitHub on your machine. With `--test-secret` or `--remove-test-secret`, stores or removes

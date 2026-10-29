@@ -73,6 +73,32 @@ func TestSetupWaitTimer(t *testing.T) {
 	}
 }
 
+func TestSetupWaitTimerOnExistingEnvironment(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want []string
+	}{
+		{"default leaves it alone", nil, nil},
+		{"same value changes nothing", []string{"--wait-timer", "5"}, nil},
+		{"new value keeps the other settings", []string{"--wait-timer", "10"}, []string{"PUT /repos/o/r/environments/" + release +
+			` {"deployment_branch_policy":{"custom_branch_policies":true,"protected_branches":false},"wait_timer":10,` +
+			`"reviewers":[{"type":"User","id":101},{"type":"Team","id":202}],"prevent_self_review":false}`}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ta := newTestApp(t)
+			addReleaseEnv(ta.gh)
+			if code := ta.run(append([]string{"setup", "-R", "o/r", "--env", release}, tt.args...)...); code != 0 {
+				t.Fatalf("exit %d:\n%s\n%s", code, ta.stdout, ta.stderr)
+			}
+			if !slices.Equal(ta.gh.writes, tt.want) {
+				t.Errorf("writes: %v\nwant: %v", ta.gh.writes, tt.want)
+			}
+		})
+	}
+}
+
 func TestSetupTestSecret(t *testing.T) {
 	ta := newTestApp(t)
 	addReleaseEnv(ta.gh)
