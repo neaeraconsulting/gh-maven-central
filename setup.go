@@ -286,6 +286,9 @@ func (s *session) collectToken(opts setupOptions) (centralToken, error) {
 // makeKey generates the key and saves its revocation certificate, returning the certificate's path
 func (s *session) makeKey(opts setupOptions) (*signingKey, string, error) {
 	uid := fmt.Sprintf("%s (%s)", opts.keyName, opts.repo)
+	if root := gitWorkTree(opts.outDir); root != "" {
+		s.warn("%s is in the git working tree %s; don't commit the revocation certificate", opts.outDir, root)
+	}
 	if s.dryRun {
 		s.info("[dry-run] Generate an RSA %d key \"%s\"", s.rsaBits, uid)
 		s.info("[dry-run] Save the revocation certificate in %s", opts.outDir)
@@ -306,4 +309,23 @@ func (s *session) makeKey(opts setupOptions) (*signingKey, string, error) {
 	}
 	s.info("Saved the revocation certificate as %s", path)
 	return key, path, nil
+}
+
+// gitWorkTree returns the root of the git working tree containing dir, or "" if there isn't one
+func gitWorkTree(dir string) string {
+	dir, err := filepath.Abs(dir)
+	if err != nil {
+		return ""
+	}
+	for {
+		// .git is a file in linked worktrees and submodules
+		if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return ""
+		}
+		dir = parent
+	}
 }

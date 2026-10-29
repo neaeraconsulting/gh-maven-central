@@ -1,3 +1,5 @@
 /gh-maven-central
 /gh-maven-central.exe
 /dist/
+# Revocation certificates from setup --out-dir
+*.rev

@@ -13,14 +13,21 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest]
+        go: [stable]
+        # Also test the minimum version that go.mod declares
+        include:
+          - os: ubuntu-latest
+            go: go.mod
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
-          go-version: stable
+          go-version: ${{ matrix.go == 'stable' && 'stable' || '' }}
+          go-version-file: ${{ matrix.go == 'go.mod' && 'go.mod' || '' }}
+      # gofmt output can change between Go versions, so only the latest is checked
       - name: Check formatting
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && matrix.go == 'stable'
         run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
       - run: go vet ./...
       # The gpg compatibility test runs on Linux only; gpg is slow to start on Windows

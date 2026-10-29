@@ -181,6 +181,21 @@ func TestSetupDryRun(t *testing.T) {
 	}
 }
 
+func TestSetupWarnsAboutOutDirInGitWorkTree(t *testing.T) {
+	ta := newTestApp(t)
+	repo := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repo, ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	outDir := filepath.Join(repo, "keys")
+	if code := ta.run(setupArgs(outDir, "--dry-run")...); code != 0 {
+		t.Fatalf("exit %d:\n%s", code, ta.stderr)
+	}
+	if !strings.Contains(ta.stderr.String(), "warning: "+outDir+" is in the git working tree "+repo) {
+		t.Errorf("no warning:\n%s", ta.stderr)
+	}
+}
+
 func TestSetupKeyserverFailureChangesNothingOnGitHub(t *testing.T) {
 	ta := newTestApp(t)
 	ta.ks.fail = true
