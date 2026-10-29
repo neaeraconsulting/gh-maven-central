@@ -70,6 +70,14 @@ func TestReviewersChanges(t *testing.T) {
 		{"clear sends an empty list",
 			[]string{"--clear"},
 			keptSettings + `"reviewers":[]}`},
+		{"set the wait timer",
+			[]string{"--wait-timer", "10"},
+			`{"deployment_branch_policy":{"custom_branch_policies":true,"protected_branches":false},"wait_timer":10,` +
+				`"reviewers":[{"type":"User","id":101},{"type":"Team","id":202}],"prevent_self_review":false}`},
+		{"remove the wait timer",
+			[]string{"--wait-timer", "0"},
+			`{"deployment_branch_policy":{"custom_branch_policies":true,"protected_branches":false},"wait_timer":0,` +
+				`"reviewers":[{"type":"User","id":101},{"type":"Team","id":202}],"prevent_self_review":false}`},
 		{"prevent self-review",
 			[]string{"--prevent-self-review"},
 			keptSettings + `"reviewers":[{"type":"User","id":101},{"type":"Team","id":202}],"prevent_self_review":true}`},
@@ -137,6 +145,7 @@ func TestReviewersErrors(t *testing.T) {
 		{"set and clear", []string{"-R", "o/r", "--env", release, "--set", "bob", "--clear"}, 2, "can't be combined"},
 		{"allow and prevent", []string{"-R", "o/r", "--env", release, "--allow-self-review", "--prevent-self-review"}, 2, "can't be combined"},
 		{"change two envs", []string{"-R", "o/r", "--env", release, "--env", "other", "--add", "bob"}, 2, "exactly one --env"},
+		{"negative wait timer", []string{"-R", "o/r", "--env", release, "--wait-timer", "-1"}, 2, "--wait-timer must be from 0"},
 		{"bad login", []string{"-R", "o/r", "--env", release, "--add", "a/b"}, 2, "invalid GitHub login"},
 		{"unknown option", []string{"-R", "o/r", "--env", release, "--nope"}, 2, "not defined"},
 		{"unknown user", []string{"-R", "o/r", "--env", release, "--add", "ghost"}, 1, `GitHub user "ghost" not found`},

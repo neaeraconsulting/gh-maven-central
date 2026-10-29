@@ -20,6 +20,8 @@ func setupArgs(outDir string, extra ...string) []string {
 		"--out-dir", outDir}, extra...)
 }
 
+const createSnapshot = "PUT /repos/o/r/environments/" + snapshot + ` {"deployment_branch_policy":null,"wait_timer":5}`
+
 func TestSetupWithoutSecrets(t *testing.T) {
 	ta := newTestApp(t)
 	addReleaseEnv(ta.gh)
@@ -27,7 +29,7 @@ func TestSetupWithoutSecrets(t *testing.T) {
 		t.Fatalf("exit %d:\n%s\n%s", code, ta.stdout, ta.stderr)
 	}
 	want := []string{
-		"PUT /repos/o/r/environments/" + snapshot,
+		createSnapshot,
 		`POST /repos/o/r/actions/variables {"name":"MAVEN_CENTRAL_PUBLISH","value":"true"}`,
 	}
 	if !slices.Equal(ta.gh.writes, want) {
@@ -38,6 +40,36 @@ func TestSetupWithoutSecrets(t *testing.T) {
 	}
 	if !strings.Contains(ta.stdout.String(), "--env "+release+" --env "+snapshot+" --secrets") {
 		t.Errorf("the summary doesn't show how to add the secrets:\n%s", ta.stdout)
+	}
+}
+
+func TestSetupWaitTimer(t *testing.T) {
+	tests := []struct {
+		name     string
+		args     []string
+		freePlan bool
+		want     string
+	}{
+		{"custom", []string{"--wait-timer", "30"}, false, ` {"deployment_branch_policy":null,"wait_timer":30}`},
+		{"none", []string{"--wait-timer", "0"}, false, ""},
+		{"private repository on a free plan", nil, true, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ta := newTestApp(t)
+			ta.gh.private, ta.gh.freePlan = tt.freePlan, tt.freePlan
+			args := append([]string{"setup", "-R", "o/r", "--env", snapshot}, tt.args...)
+			if code := ta.run(args...); code != 0 {
+				t.Fatalf("exit %d:\n%s\n%s", code, ta.stdout, ta.stderr)
+			}
+			want := "PUT /repos/o/r/environments/" + snapshot + tt.want
+			if got := ta.gh.writes[len(ta.gh.writes)-1]; got != want {
+				t.Errorf("writes: %v\nwant last: %s", ta.gh.writes, want)
+			}
+			if tt.freePlan && !strings.Contains(ta.stderr.String(), "creating it without one") {
+				t.Errorf("stderr doesn't warn about the wait timer:\n%s", ta.stderr)
+			}
+		})
 	}
 }
 
@@ -91,13 +123,13 @@ func TestSetup(t *testing.T) {
 		t.Fatalf("exit %d:\n%s\n%s", code, ta.stdout, ta.stderr)
 	}
 
-	// The existing environment is left alone and the missing one is created without settings
+	// The existing environment is left alone and the missing one is created with the default wait timer
 	for _, w := range ta.gh.writes {
 		if strings.HasPrefix(w, "PUT /repos/o/r/environments/"+release+" ") {
 			t.Errorf("existing environment was changed: %s", w)
 		}
 	}
-	if !slices.Contains(ta.gh.writes, "PUT /repos/o/r/environments/"+snapshot) {
+	if !slices.Contains(ta.gh.writes, createSnapshot) {
 		t.Errorf("snapshot environment wasn't created: %v", ta.gh.writes)
 	}
 
@@ -289,6 +321,7 @@ func TestSetupUsageErrors(t *testing.T) {
 		{"key option without secrets", []string{"-R", "o/r", "--env", release, "--keyserver", "k"}, "--keyserver needs --secrets"},
 		{"bad publish", append(full, "--publish", "yes"), "--publish must be true or false"},
 		{"bad group id", append(full, "--group-id", "io..github"), "--group-id must be a groupId"},
+		{"wait timer too long", append(full, "--wait-timer", "43201"), "--wait-timer must be from 0 to 43200"},
 		{"key name with parenthesis", append(full, "--key-name", "a (b)"), "--key-name can't contain"},
 		{"keyserver URL", append(full, "--keyserver", "https://x"), "--keyserver must be a host name"},
 		{"extra argument", append(full, "extra"), "unexpected argument"},

@@ -208,9 +208,24 @@ func (s *session) putEnv(name string, update envUpdate) error {
 	return nil
 }
 
-func (s *session) createEnv(name string) error {
-	return s.write("Creating environment "+name, func() error {
-		if err := s.call(http.MethodPut, s.envPath(name), nil, nil); err != nil {
+// createEnv creates the environment with a wait timer of waitTimer minutes, or none if it's 0
+func (s *session) createEnv(name string, waitTimer int) error {
+	description := "Creating environment " + name
+	var body any
+	if waitTimer > 0 {
+		description += fmt.Sprintf(" with a wait timer of %d minutes", waitTimer)
+		body = envUpdate{DeploymentBranchPolicy: json.RawMessage("null"), WaitTimer: &waitTimer}
+	}
+	return s.write(description, func() error {
+		err := s.call(http.MethodPut, s.envPath(name), body, nil)
+		// Private repositories on free plans can't have wait timers
+		if httpErr, ok := errors.AsType[*api.HTTPError](err); ok && body != nil && s.private &&
+			httpErr.StatusCode >= 400 && httpErr.StatusCode < 500 && httpErr.StatusCode != http.StatusNotFound {
+			s.warn("can't set a wait timer on %s (%s); creating it without one, because wait timers on "+
+				"private repositories need a paid GitHub plan", name, readError(err))
+			err = s.call(http.MethodPut, s.envPath(name), nil, nil)
+		}
+		if err != nil {
 			return fmt.Errorf("can't create environment %s: %w", name, err)
 		}
 		return nil

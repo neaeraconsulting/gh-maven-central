@@ -10,9 +10,9 @@ import (
 
 const setupUsage = `Usage: gh maven-central setup -R OWNER/REPO --env NAME [--env NAME]... [--secrets] [options]
 
-Creates any of the environments that don't exist, and sets or removes the repository variables
-given with the options below. Existing environments' settings and reviewers are left unchanged;
-use 'gh maven-central reviewers' to set reviewers.
+Creates any of the environments that don't exist, with a wait timer, and sets or removes the
+repository variables given with the options below. Existing environments' settings and reviewers
+are left unchanged; use 'gh maven-central reviewers' to change them.
 
 With --secrets, it also generates a new OpenPGP signing key for the repository, uploads its public
 key to a keyserver, and stores the signing key, its passphrase and the Central Portal user token in
@@ -26,6 +26,8 @@ Options:
   --test-secret                   Store the secret TEST_ID, whose value is just "test", in every
                                   environment, to check that secrets can be stored there
   --remove-test-secret            Remove TEST_ID from every environment
+  --wait-timer MINUTES            The wait timer of the environments it creates, which delays
+                                  each job that uses them; 0 for none (default: 5)
 ` + variableOptionsUsage + `  --key-name TEXT                 With --secrets, the name in the key's user ID, which is
                                   "TEXT (OWNER/REPO)" (default: "<repo> release signing")
   --out-dir DIR                   With --secrets, where to save the revocation certificate
@@ -46,6 +48,7 @@ type setupOptions struct {
 	envs                       stringList
 	secrets                    bool
 	testSecret, removeTest     bool
+	waitTimer                  int
 	variables                  variableOptions
 	keyName, outDir, keyserver string
 	dryRun                     bool
@@ -64,6 +67,7 @@ func (a *app) setup(args []string) error {
 	fs.BoolVar(&opts.secrets, "secrets", false, "")
 	fs.BoolVar(&opts.testSecret, "test-secret", false, "")
 	fs.BoolVar(&opts.removeTest, "remove-test-secret", false, "")
+	fs.IntVar(&opts.waitTimer, "wait-timer", 5, "")
 	opts.variables.addFlags(fs)
 	fs.StringVar(&opts.keyName, "key-name", "", "")
 	fs.StringVar(&opts.outDir, "out-dir", "", "")
@@ -130,7 +134,7 @@ func (a *app) setup(args []string) error {
 	for _, name := range opts.envs {
 		if exists[name] {
 			s.info("%s already exists; its settings are unchanged", name)
-		} else if err := s.createEnv(name); err != nil {
+		} else if err := s.createEnv(name, opts.waitTimer); err != nil {
 			return err
 		}
 	}
@@ -207,6 +211,9 @@ func (o *setupOptions) check() ([]variableChange, error) {
 	}
 	variables, err := o.variables.changes()
 	if err != nil {
+		return nil, err
+	}
+	if err := checkWaitTimer(o.waitTimer); err != nil {
 		return nil, err
 	}
 	if o.testSecret && o.removeTest {

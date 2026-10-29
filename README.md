@@ -26,12 +26,12 @@ change would do first.
 
 For each repository, it:
 
-- Creates the deployment environments that don't exist.
+- Creates the deployment environments that don't exist, with a wait timer.
 - With `--secrets`, generates an OpenPGP signing key and uploads its public key to a keyserver,
   where Maven Central looks it up to verify signatures. Then stores the signing key, its
   passphrase and a Central Portal user token as secrets in the environments.
 - Sets or removes the repository variables that turn publishing on and set the groupId.
-- Shows and changes the environments' required reviewers.
+- Shows and changes the environments' required reviewers and wait timers.
 - Shows how a repository is set up: environments, secret names and variables.
 
 It doesn't write workflows: each repository keeps its own publishing workflows, which read the
@@ -152,6 +152,7 @@ gh maven-central setup -R OWNER/REPO --env NAME [--env NAME]... [--secrets] [opt
 | `--secrets`                    | Also generate the signing key and store the [secrets](#names)                   |
 | `--test-secret`                | Store the secret `TEST_ID`, whose value is just `test`, in every environment, to check that secrets can be stored there |
 | `--remove-test-secret`         | Remove `TEST_ID` from every environment                                         |
+| `--wait-timer MINUTES`         | The wait timer of the environments it creates, which delays each job that uses them; `0` for none (default: `5`) |
 | `--publish true\|false`        | Set `MAVEN_CENTRAL_PUBLISH`                                                     |
 | `--remove-publish`             | Remove `MAVEN_CENTRAL_PUBLISH`, which turns publishing off                      |
 | `--group-id GROUP`             | Set `MAVEN_GROUP_ID`                                                            |
@@ -171,8 +172,10 @@ gh maven-central setup -R OWNER/REPO --env NAME [--env NAME]... [--secrets] [opt
 3. With `--secrets`, saves the key's [revocation certificate](#revoking-a-key) to `--out-dir`.
 4. With `--secrets`, uploads the public key to the keyserver and waits until the keyserver returns
    it. If that fails, nothing on GitHub has been changed yet.
-5. Creates the environments that don't exist. Existing environments' settings and reviewers are
-   left as they are.
+5. Creates the environments that don't exist, with a wait timer of `--wait-timer` minutes, which
+   leaves time to cancel a job before it publishes. Existing environments' settings and reviewers
+   are left as they are. Wait timers on private repositories need a paid GitHub plan; without one,
+   `setup` warns and creates the environments without a wait timer.
 6. With `--secrets`, stores the key, passphrase and token in every environment, encrypted for
    GitHub on your machine. With `--test-secret` or `--remove-test-secret`, stores or removes
    `TEST_ID`.
@@ -197,7 +200,7 @@ set the `CENTRAL_TOKEN_USERNAME` and `CENTRAL_TOKEN_PASSWORD` environment variab
 ## reviewers
 
 ```
-gh maven-central reviewers -R OWNER/REPO --env NAME [--env NAME]...      # show reviewers
+gh maven-central reviewers -R OWNER/REPO --env NAME [--env NAME]...      # show environments
 gh maven-central reviewers -R OWNER/REPO --env NAME [change options]     # change one environment
 ```
 
@@ -209,6 +212,7 @@ gh maven-central reviewers -R OWNER/REPO --env NAME [change options]     # chang
 | `--clear`               | Remove all reviewers, so jobs run without approval                   |
 | `--allow-self-review`   | Let the person who triggered a job approve it                        |
 | `--prevent-self-review` | Don't let the person who triggered a job approve it                  |
+| `--wait-timer MINUTES`  | Delay each job that uses the environment by this many minutes, up to 43200 (30 days); `0` removes the wait timer |
 | `--dry-run`             | Show the result without changing anything                            |
 
 An environment can have up to 6 reviewers, and any one of them can approve a job. Self-review is
@@ -217,9 +221,9 @@ After that, the setting changes only when one of the self-review options is give
 only reviewer and self-review is prevented, you can't approve your own releases; the command warns
 about that.
 
-Changing reviewers keeps the environment's other settings, such as a wait timer or deployment
+Changing reviewers keeps the environment's other settings, such as its wait timer and deployment
 branch policy, and keeps team reviewers added in the GitHub UI unless `--set` or `--clear` replaces
-the list. Required reviewers need a public repository or a paid GitHub plan.
+the list. Required reviewers and wait timers need a public repository or a paid GitHub plan.
 
 ## variables
 

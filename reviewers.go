@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"strings"
 )
@@ -11,9 +12,9 @@ const maxReviewers = 6
 const reviewersUsage = `Usage: gh maven-central reviewers -R OWNER/REPO --env NAME [--env NAME]...
        gh maven-central reviewers -R OWNER/REPO --env NAME [change options]
 
-With no change options, shows the required reviewers of each environment. Otherwise changes the
-reviewers of one environment, creating it if it doesn't exist. The environment's other settings,
-such as a wait timer or deployment branch policy, are kept.
+With no change options, shows the required reviewers and wait timer of each environment.
+Otherwise changes them in one environment, creating it if it doesn't exist. The environment's
+other settings, such as its deployment branch policy, are kept.
 
 Options:
   -R, --repo OWNER/REPO   Repository (required)
@@ -30,6 +31,8 @@ Change options:
   --prevent-self-review   Don't let the person who triggered a job approve it. If neither option
                           is given, the current setting is kept, and an environment that has no
                           reviewers yet prevents self-review.
+  --wait-timer MINUTES    Delay each job that uses the environment by this many minutes, up to
+                          43200 (30 days); 0 removes the wait timer
 `
 
 func (a *app) reviewers(args []string) error {
@@ -37,6 +40,7 @@ func (a *app) reviewers(args []string) error {
 		repo                       string
 		envs, adds, removes, sets  stringList
 		clear, allow, prevent, dry bool
+		waitTimer                  int
 	)
 	fs := newFlagSet("reviewers")
 	fs.StringVar(&repo, "R", "", "")
@@ -48,6 +52,7 @@ func (a *app) reviewers(args []string) error {
 	fs.BoolVar(&clear, "clear", false, "")
 	fs.BoolVar(&allow, "allow-self-review", false, "")
 	fs.BoolVar(&prevent, "prevent-self-review", false, "")
+	fs.IntVar(&waitTimer, "wait-timer", 0, "")
 	fs.BoolVar(&dry, "dry-run", false, "")
 	if err := a.parseFlags(fs, args, reviewersUsage); err != nil {
 		return err
@@ -65,9 +70,18 @@ func (a *app) reviewers(args []string) error {
 	if replace && (len(adds) > 0 || len(removes) > 0 || (len(sets) > 0 && clear)) {
 		return usageErrorf("--set and --clear can't be combined with each other or with --add or --remove")
 	}
-	changing := replace || len(adds) > 0 || len(removes) > 0 || allow || prevent
+	var timer *int
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "wait-timer" {
+			timer = &waitTimer
+		}
+	})
+	if err := checkWaitTimer(waitTimer); err != nil {
+		return err
+	}
+	changing := replace || len(adds) > 0 || len(removes) > 0 || allow || prevent || timer != nil
 	if changing && len(envs) != 1 {
-		return usageErrorf("changing reviewers needs exactly one --env")
+		return usageErrorf("changing an environment needs exactly one --env")
 	}
 	for _, login := range append(append([]string{}, sets...), adds...) {
 		if !loginPattern.MatchString(login) {
@@ -133,8 +147,11 @@ func (a *app) reviewers(args []string) error {
 	if err := s.checkReviewers(list, preventSetting); err != nil {
 		return err
 	}
-	if err := s.putEnv(env.Name, updateBody(env, list, preventSetting)); err != nil {
+	if err := s.putEnv(env.Name, updateBody(env, list, preventSetting, timer)); err != nil {
 		return err
+	}
+	if timer != nil {
+		env.WaitTimer = *timer
 	}
 	heading := fmt.Sprintf("%s (%s)", env.Name, repo)
 	if dry {
@@ -207,11 +224,11 @@ func (s *session) checkReviewers(list []reviewer, prevent *bool) error {
 	return nil
 }
 
-// updateBody returns the PUT body that sets the reviewers and keeps env's other settings, so a PUT
-// never resets settings made in the GitHub UI
-func updateBody(env *environment, list []reviewer, prevent *bool) envUpdate {
-	update := envUpdate{DeploymentBranchPolicy: env.BranchPolicy, PreventSelfReview: prevent}
-	if env.WaitTimer > 0 {
+// updateBody returns the PUT body that sets the reviewers, and the wait timer unless it's nil, and
+// keeps env's other settings, so a PUT never resets settings made in the GitHub UI
+func updateBody(env *environment, list []reviewer, prevent *bool, waitTimer *int) envUpdate {
+	update := envUpdate{DeploymentBranchPolicy: env.BranchPolicy, PreventSelfReview: prevent, WaitTimer: waitTimer}
+	if waitTimer == nil && env.WaitTimer > 0 {
 		update.WaitTimer = new(env.WaitTimer)
 	}
 	// An empty list is sent only to remove existing reviewers

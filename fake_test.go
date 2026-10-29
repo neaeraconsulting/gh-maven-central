@@ -27,6 +27,8 @@ type fakeGitHub struct {
 	mu      sync.Mutex
 	admin   bool
 	private bool
+	// freePlan makes GitHub refuse wait timers on a private repository
+	freePlan bool
 	// envs holds each environment's GET response
 	envs  map[string]map[string]any
 	users map[string]map[string]any
@@ -158,6 +160,10 @@ func (f *fakeGitHub) serve(w http.ResponseWriter, req *http.Request) {
 				notFound()
 			}
 		case http.MethodPut:
+			if f.private && f.freePlan && strings.Contains(string(body), `"wait_timer":`) {
+				reply(http.StatusUnprocessableEntity, map[string]string{"message": "Failed to create the environment protection rule"})
+				return
+			}
 			if _, ok := f.envs[name]; !ok {
 				f.addEnv(name, nil)
 			}

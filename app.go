@@ -209,3 +209,13 @@ func checkEnvFlags(envs []string) error {
 	}
 	return nil
 }
+
+// GitHub allows wait timers of up to 30 days
+const maxWaitTimer = 43200
+
+func checkWaitTimer(minutes int) error {
+	if minutes < 0 || minutes > maxWaitTimer {
+		return usageErrorf("--wait-timer must be from 0 to %d minutes", maxWaitTimer)
+	}
+	return nil
+}
