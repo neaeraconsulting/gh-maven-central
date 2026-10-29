@@ -1,0 +1,19 @@
+name: Release
+
+# Pushing a tag such as v1.0.0 builds the binaries that 'gh extension install' downloads
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: cli/gh-extension-precompile@v2
+        with:
+          go_version_file: go.mod
