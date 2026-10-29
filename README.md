@@ -25,15 +25,37 @@ gh extension install iyourshaw/gh-maven-central
 gh extension upgrade maven-central    # update later
 ```
 
-To run it from a working copy instead, build it there and install the folder:
-
-```shell
-go build
-gh extension install .
-```
-
 It needs only `gh`, logged in (`gh auth login`) as a user with admin access to the repositories you
 set up. It doesn't need `gpg`.
+
+### From a local copy
+
+To use the extension without installing a release from GitHub, such as to try out changes, build
+it from a local copy of this repository. This also needs [Go](https://go.dev/dl/), at least the
+version in `go.mod`.
+
+```shell
+cd gh-maven-central   # the folder must keep this name, which gh uses for the command name
+go build              # creates gh-maven-central, or gh-maven-central.exe on Windows
+gh extension install .
+gh maven-central --help
+```
+
+On Windows, `gh extension install .` warns that there's no executable named `gh-maven-central`,
+because it doesn't check for `gh-maven-central.exe`. The extension works anyway.
+
+`gh extension install .` links to the folder rather than copying it, so after changing the code,
+run `go build` again and `gh maven-central` runs the new build. `gh extension upgrade` doesn't
+apply to a local install.
+
+To switch between a local install and the GitHub release, remove the installed one first:
+
+```shell
+gh extension remove maven-central
+```
+
+You can also run the binary directly without installing it, such as
+`./gh-maven-central status -R OWNER/REPO`. It uses the same `gh` login.
 
 ## Before you start
 
