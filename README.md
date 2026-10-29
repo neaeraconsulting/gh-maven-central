@@ -1,7 +1,30 @@
 # gh-maven-central
 
 A [GitHub CLI](https://cli.github.com/) extension that sets up a repository to publish to
-[Maven Central](https://central.sonatype.com/) from GitHub Actions. For each repository, it:
+[Maven Central](https://central.sonatype.com/) from GitHub Actions.
+
+## Why
+
+Publishing to Maven Central from GitHub Actions needs a signing key and a Central Portal token in
+every repository, usually in two deployment environments, such as one for snapshots and one for
+releases. Doing that by hand for several repositories is tedious and error-prone:
+
+- Each repository needs its own OpenPGP key, generated with `gpg`, exported, uploaded to a
+  keyserver, and kept track of along with its passphrase and revocation certificate.
+- The key, passphrase and token have to be copied and pasted into each environment's secrets, so
+  it's easy to paste the wrong value, miss an environment, or leave a stray copy in a file, the
+  clipboard or a shell history.
+- Environments, reviewers and variables are set separately in the GitHub UI, and it's hard to see
+  afterwards whether every repository was set up the same way.
+
+This tool does it in one command per repository. The private key goes from memory straight into
+the encrypted secrets, without being written to disk or pasted anywhere, and the names are the
+same in every repository. `status` shows how a repository is set up, and `--dry-run` shows what a
+change would do first.
+
+## What it does
+
+For each repository, it:
 
 - Creates the deployment environments that don't exist.
 - With `--secrets`, generates an OpenPGP signing key and uploads its public key to a keyserver,
@@ -87,7 +110,8 @@ Do these steps in the [Central Portal](https://central.sonatype.com/), because t
 
 1. Add and verify the namespace for the groupId under **Namespaces**, such as `io.github.<owner>`.
 2. Generate a user token under **View Account > Generate User Token**. `setup --secrets` asks for
-   it, or reads it from the `CENTRAL_TOKEN_USERNAME` and `CENTRAL_TOKEN_PASSWORD` environment variables.
+   it, or reads it from the `CENTRAL_TOKEN_USERNAME` and `CENTRAL_TOKEN_PASSWORD` environment
+   variables.
 
 ## Example
 
@@ -106,7 +130,8 @@ gh maven-central setup -R neaeraconsulting/jpo-asn-pojos \
 gh maven-central setup -R neaeraconsulting/jpo-asn-pojos ...
 
 # Require approval for releases from either of two users
-gh maven-central reviewers -R neaeraconsulting/jpo-asn-pojos --env maven-central-release --set LOGIN1 --set LOGIN2
+gh maven-central reviewers -R neaeraconsulting/jpo-asn-pojos --env maven-central-release \
+  --set LOGIN1 --set LOGIN2
 
 # Later, turn publishing off without touching the key
 gh maven-central variables -R neaeraconsulting/jpo-asn-pojos --publish false
@@ -159,15 +184,15 @@ copy. That's enough, because the key is only for this repository and can be repl
 
 ### Replacing the key
 
-Run `setup --secrets` again to replace the key in every environment. To keep the token already stored, leave
-the username blank when asked for it. Artifacts signed with the earlier key still verify, because
-its public key stays on the keyserver.
+Run `setup --secrets` again to replace the key in every environment. To keep the token already
+stored, leave the username blank when asked for it. Artifacts signed with the earlier key still
+verify, because its public key stays on the keyserver.
 
 ### Token input on Windows
 
-`setup --secrets` reads the token password without echoing it, which needs a console. Git Bash's default
-mintty window isn't one: run the extension from Windows Terminal or PowerShell instead, or set the
-`CENTRAL_TOKEN_USERNAME` and `CENTRAL_TOKEN_PASSWORD` environment variables.
+`setup --secrets` reads the token password without echoing it, which needs a console. Git Bash's
+default mintty window isn't one: run the extension from Windows Terminal or PowerShell instead, or
+set the `CENTRAL_TOKEN_USERNAME` and `CENTRAL_TOKEN_PASSWORD` environment variables.
 
 ## reviewers
 
@@ -259,8 +284,8 @@ gpg --import <owner>-<repo>-<keyid>.rev
 gpg --keyserver hkps://keyserver.ubuntu.com --send-keys <fingerprint>
 ```
 
-Then run `setup --secrets` again to give the repository a new key. After the revocation, signatures made
-with the old key, including earlier ones, are reported as made by a revoked key.
+Then run `setup --secrets` again to give the repository a new key. After the revocation,
+signatures made with the old key, including earlier ones, are reported as made by a revoked key.
 
 ## Development
 
@@ -270,7 +295,44 @@ go build
 ```
 
 The tests run against an in-memory fake of the GitHub API and keyserver, so they don't need
-network access or a GitHub login. Pushing a `v*` tag builds the release binaries.
+network access or a GitHub login.
+
+### CI
+
+Every push to `main` and every pull request runs `.github/workflows/ci.yml`. It checks formatting
+with `gofmt`, runs `go vet`, and runs the tests on Linux and Windows with the latest stable Go,
+plus once on Linux with the minimum Go version in `go.mod`.
+
+### Releases
+
+`gh extension install` and `gh extension upgrade` download a prebuilt binary from the repository's
+latest GitHub release, so users don't need Go. Releases are built by
+`.github/workflows/release.yml`, which runs when a tag starting with `v` is pushed. It uses
+[gh-extension-precompile](https://github.com/cli/gh-extension-precompile) to build the binaries
+for each supported platform with the latest stable Go, and creates a release for the tag with
+those binaries attached.
+
+To make a release:
+
+1. Check that CI passed on the commit to release, normally the latest commit on `main`.
+2. Tag it with the next [semantic version](https://semver.org/) and push the tag:
+
+   ```shell
+   git checkout main
+   git pull
+   git tag v1.2.0
+   git push origin v1.2.0
+   ```
+
+3. Watch the Release workflow under the repository's **Actions** tab, or with `gh run watch`.
+   When it finishes, the release and its binaries are under **Releases**.
+4. Check it from a machine with the extension installed: `gh extension upgrade maven-central`,
+   then `gh maven-central --help`.
+
+If the workflow fails, fix the problem, delete the tag locally and on GitHub
+(`git tag -d v1.2.0` and `git push origin :refs/tags/v1.2.0`), delete the release if one was
+created, and tag again. Don't move a tag that has a published release, because users may have
+installed it; release a new version instead.
 
 ## License
 
