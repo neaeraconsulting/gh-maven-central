@@ -3,3 +3,6 @@
 /dist/
 # Revocation certificates from setup --out-dir
 *.rev
+/.idea/
+/.vscode/
+
