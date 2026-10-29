@@ -1,4 +1,4 @@
-module github.com/iyourshaw/gh-maven-central
+module github.com/neaeraconsulting/gh-maven-central
 
 go 1.26.7
 

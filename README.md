@@ -48,7 +48,7 @@ The extension is a Go program. `gh` downloads the binary for your platform from 
 release:
 
 ```shell
-gh extension install iyourshaw/gh-maven-central
+gh extension install neaeraconsulting/gh-maven-central
 gh extension upgrade maven-central    # update later
 ```
 
