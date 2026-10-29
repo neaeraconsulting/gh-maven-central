@@ -97,19 +97,19 @@ the `MAVEN_CENTRAL_PUBLISH` variable is `true`:
 
 ```shell
 # Preview the changes
-gh maven-central setup -R CDOT-CV/jpo-asn-pojos \
+gh maven-central setup -R neaeraconsulting/jpo-asn-pojos \
   --env maven-central-release --env maven-central-snapshot \
   --secrets --publish true \
   --dry-run
 
 # Run it: the same command without --dry-run
-gh maven-central setup -R CDOT-CV/jpo-asn-pojos ...
+gh maven-central setup -R neaeraconsulting/jpo-asn-pojos ...
 
-# Require approval for releases from alice or bob
-gh maven-central reviewers -R CDOT-CV/jpo-asn-pojos --env maven-central-release --set alice --set bob
+# Require approval for releases from either of two users
+gh maven-central reviewers -R neaeraconsulting/jpo-asn-pojos --env maven-central-release --set LOGIN1 --set LOGIN2
 
 # Later, turn publishing off without touching the key
-gh maven-central variables -R CDOT-CV/jpo-asn-pojos --publish false
+gh maven-central variables -R neaeraconsulting/jpo-asn-pojos --publish false
 ```
 
 Then publish a test snapshot to check the setup.
@@ -271,3 +271,7 @@ go build
 
 The tests run against an in-memory fake of the GitHub API and keyserver, so they don't need
 network access or a GitHub login. Pushing a `v*` tag builds the release binaries.
+
+## License
+
+[Apache License 2.0](LICENSE)
